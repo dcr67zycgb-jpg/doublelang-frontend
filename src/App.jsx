@@ -58,11 +58,20 @@ function DrawingBoard({ block, updateContent }) {
 const pcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
 function App() {
-  const [role, setRole] = useState(null);
+  const [currentUser, setCurrentUser] = useState(() => {
+    const saved = localStorage.getItem('doublelang_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [role, setRole] = useState(() => {
+    const saved = localStorage.getItem('doublelang_user');
+    return saved ? JSON.parse(saved).role : null;
+  });
   const [socket, setSocket] = useState(null);
   const [roomId, setRoomId] = useState('');
   const [blocks, setBlocks] = useState([]);
   const [lessonsList, setLessonsList] = useState([]);
+  const [authMode, setAuthMode] = useState('login'); // 'login' или 'register'
+  const [authForm, setAuthForm] = useState({ name: '', email: '', password: '', role: 'student' });
   
   const [localStream, setLocalStream] = useState(null);
   const myVideoRef = useRef();
@@ -76,19 +85,25 @@ function App() {
 
     if (currentRoom) {
       setRoomId(currentRoom);
-    } else {
-      fetch('http://localhost:3000/api/lessons')
+    } else if (currentUser && currentUser.role === 'teacher') {
+      // Запрашиваем уроки только для текущего преподавателя
+      // ВНИМАНИЕ: Замените localhost на вашу ссылку Render перед деплоем!
+      fetch(`http://localhost:3000/api/lessons?teacher_id=${currentUser.id}`)
         .then(res => res.json())
         .then(data => setLessonsList(data))
-        .catch(err => console.error(err));
+        .catch(err => console.error('Ошибка загрузки уроков:', err));
     }
-  }, []);
+  }, [currentUser]);
 
   useEffect(() => {
     if (!role || !roomId) return;
 
-    const newSocket = io('http://localhost:3000', {
-      query: { roomId: roomId, userName: role === 'teacher' ? 'Преподаватель' : 'Ученик' }
+    const newSocket = io('http://localhost:3000', { // Замените на ссылку Render перед деплоем!
+      query: { 
+        roomId: roomId, 
+        userName: currentUser ? currentUser.name : (role === 'teacher' ? 'Преподаватель' : 'Ученик'),
+        userId: currentUser ? currentUser.id : null // Передаем ID
+      }
     });
     setSocket(newSocket);
 
@@ -192,6 +207,41 @@ function App() {
     socket.emit('board_change', newBlocks);
   };
 
+  // --- ФУНКЦИЯ АВТОРИЗАЦИИ ---
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
+    const res = await fetch(`http://localhost:3000${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(authForm)
+    });
+    const data = await res.json();
+    if (data.token) {
+      setCurrentUser(data.user);
+      setRole(data.user.role); // Автоматически назначаем роль для доски
+      // СОХРАНЯЕМ СЕССИЮ В БРАУЗЕР
+      localStorage.setItem('doublelang_user', JSON.stringify(data.user));
+      localStorage.setItem('doublelang_token', data.token);
+    } else if (data.id) {
+      alert('Успешная регистрация! Теперь войдите в аккаунт.');
+      setAuthMode('login');
+    } else {
+      alert(data.error);
+    }
+  };
+
+  const logout = () => {
+    setCurrentUser(null);
+    setRole(null);
+    // ОЧИЩАЕМ ПАМЯТЬ ПРИ ВЫХОДЕ
+    localStorage.removeItem('doublelang_user');
+    localStorage.removeItem('doublelang_token');
+    setRoomId('');
+    if (socket) socket.disconnect();
+    setSocket(null);
+  };
+
   const handleClear = () => {
     setBlocks([]);
     socket.emit('board_change', []);
@@ -208,19 +258,85 @@ function App() {
     setRoomId(id);
   };
 
-  if (!roomId) {
+  if (!currentUser && !roomId) {
     return (
-      <div style={{ padding: '40px', fontFamily: 'sans-serif', maxWidth: '800px', margin: '0 auto' }}>
-        <h1>Панель преподавателя 🗂️</h1>
-        <button onClick={createNewLesson} style={{ padding: '15px 20px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', marginBottom: '30px', fontSize: '16px' }}>+ Создать новый урок</button>
-        <h2>Ваши сохраненные уроки:</h2>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-          {lessonsList.map((lesson, index) => (
-            <button key={index} onClick={() => joinLesson(lesson.room_id)} style={{ padding: '15px', textAlign: 'left', background: '#f9f9f9', border: '1px solid #ddd', borderRadius: '5px', cursor: 'pointer', fontSize: '16px' }}>
-              Перейти в комнату: <strong>{lesson.room_id}</strong>
-            </button>
-          ))}
+      <div style={{ padding: '40px', fontFamily: 'sans-serif', maxWidth: '400px', margin: '50px auto', background: '#f9f9f9', borderRadius: '8px', border: '1px solid #ddd' }}>
+        <h1 style={{ textAlign: 'center', color: '#333' }}>DoubleLang</h1>
+        <h2 style={{ textAlign: 'center' }}>{authMode === 'login' ? 'Вход' : 'Регистрация'}</h2>
+        
+        <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+          {authMode === 'register' && (
+            <>
+              <input type="text" placeholder="Ваше Имя" required value={authForm.name} onChange={e => setAuthForm({...authForm, name: e.target.value})} style={{ padding: '10px' }} />
+              <select value={authForm.role} onChange={e => setAuthForm({...authForm, role: e.target.value})} style={{ padding: '10px' }}>
+                <option value="student">Я Ученик</option>
+                <option value="teacher">Я Преподаватель</option>
+                <option value="admin">Я Администратор</option>
+              </select>
+            </>
+          )}
+          <input type="email" placeholder="Email" required value={authForm.email} onChange={e => setAuthForm({...authForm, email: e.target.value})} style={{ padding: '10px' }} />
+          <input type="password" placeholder="Пароль" required value={authForm.password} onChange={e => setAuthForm({...authForm, password: e.target.value})} style={{ padding: '10px' }} />
+          
+          <button type="submit" style={{ padding: '12px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px' }}>
+            {authMode === 'login' ? 'Войти' : 'Зарегистрироваться'}
+          </button>
+        </form>
+
+        <p style={{ textAlign: 'center', marginTop: '20px', cursor: 'pointer', color: '#2196F3' }} onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>
+          {authMode === 'login' ? 'Нет аккаунта? Создать' : 'Уже есть аккаунт? Войти'}
+        </p>
+      </div>
+    );
+  }
+
+  if (currentUser && !roomId) {
+    return (
+      <div style={{ padding: '40px', fontFamily: 'sans-serif', maxWidth: '900px', margin: '0 auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', borderBottom: '2px solid #eee', paddingBottom: '20px' }}>
+          <h1>DoubleLang | Добро пожаловать, {currentUser.name}</h1>
+          <button onClick={logout} style={{ padding: '8px 15px', background: '#ff4d4f', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Выйти</button>
         </div>
+
+        {currentUser.role === 'admin' && (
+          <div>
+            <h2 style={{ color: '#9C27B0' }}>🛠️ Панель Администратора</h2>
+            <p>Здесь вы можете управлять всеми пользователями платформы, просматривать статистику оплат и блокировать аккаунты.</p>
+            <div style={{ background: '#f3e5f5', padding: '20px', borderRadius: '8px' }}>В разработке: Список всех пользователей БД...</div>
+          </div>
+        )}
+
+        {currentUser.role === 'teacher' && (
+          <div>
+            <h2 style={{ color: '#2196F3' }}>👨‍🏫 Кабинет Преподавателя</h2>
+            <button onClick={createNewLesson} style={{ padding: '15px 20px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', marginBottom: '20px' }}>+ Создать новый урок</button>
+            <h3>Ваши созданные курсы и уроки:</h3>
+            {lessonsList.length === 0 ? <p>Уроков пока нет.</p> : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {lessonsList.map((lesson, index) => (
+                  <button key={index} onClick={() => joinLesson(lesson.room_id)} style={{ padding: '15px', textAlign: 'left', background: '#e3f2fd', border: '1px solid #90caf9', borderRadius: '5px', cursor: 'pointer' }}>
+                    Перейти в комнату: <strong>{lesson.room_id}</strong>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {currentUser.role === 'student' && (
+          <div>
+            <h2 style={{ color: '#FF9800' }}>🧑‍🎓 Мое обучение</h2>
+            <p>Вставьте ссылку или ID урока, который отправил преподаватель, чтобы присоединиться:</p>
+            <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+               <input type="text" placeholder="Например: 7xb8f" id="join-input" style={{ padding: '10px', flexGrow: 1, border: '1px solid #ccc', borderRadius: '4px' }} />
+               <button onClick={() => joinLesson(document.getElementById('join-input').value)} style={{ padding: '10px 20px', background: '#FF9800', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
+                 Присоединиться к уроку
+               </button>
+            </div>
+            <h3 style={{ marginTop: '40px' }}>История уроков:</h3>
+            <p style={{ color: 'gray' }}>Здесь будут отображаться ваши прошедшие занятия и домашние задания.</p>
+          </div>
+        )}
       </div>
     );
   }
