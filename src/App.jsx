@@ -72,6 +72,7 @@ function App() {
   const [lessonsList, setLessonsList] = useState([]);
   const [authMode, setAuthMode] = useState('login'); // 'login' или 'register'
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '', role: 'student' });
+  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000'; // Замените VITE_API_URL на URL Render в .env для деплоя
   
   const [localStream, setLocalStream] = useState(null);
   const myVideoRef = useRef();
@@ -87,8 +88,7 @@ function App() {
       setRoomId(currentRoom);
     } else if (currentUser && currentUser.role === 'teacher') {
       // Запрашиваем уроки только для текущего преподавателя
-      // ВНИМАНИЕ: Замените localhost на вашу ссылку Render перед деплоем!
-      fetch(`http://localhost:3000/api/lessons?teacher_id=${currentUser.id}`)
+      fetch(`${API_BASE_URL}/api/lessons?teacher_id=${currentUser.id}`)
         .then(res => res.json())
         .then(data => setLessonsList(data))
         .catch(err => console.error('Ошибка загрузки уроков:', err));
@@ -98,7 +98,7 @@ function App() {
   useEffect(() => {
     if (!role || !roomId) return;
 
-    const newSocket = io('http://localhost:3000', { // Замените на ссылку Render перед деплоем!
+    const newSocket = io(API_BASE_URL, {
       query: { 
         roomId: roomId, 
         userName: currentUser ? currentUser.name : (role === 'teacher' ? 'Преподаватель' : 'Ученик'),
@@ -211,7 +211,7 @@ function App() {
   const handleAuth = async (e) => {
     e.preventDefault();
     const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
-    const res = await fetch(`http://localhost:3000${endpoint}`, {
+    const res = await fetch(`${API_BASE_URL}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(authForm)
