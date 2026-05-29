@@ -834,7 +834,6 @@ export default function App() {
   };
 
   // ── LAYOUT ────────────────────────────────────────────────────────────────
-  const menu = MENUS[currentUser.role] || MENUS.student;
 
   return (
     <div style={{ fontFamily: FONT, display: 'flex', minHeight: '100vh', background: C.bg }}>
