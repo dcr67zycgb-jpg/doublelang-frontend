@@ -106,8 +106,9 @@ export default function App() {
   const [materialsTab, setMaterialsTab] = useState('Каталог');
   const [scheduleForm, setScheduleForm] = useState({ title: '', student_email: '', lesson_date: '', start_time: '09:00', end_time: '10:00' });
   const [showScheduleForm, setShowScheduleForm] = useState(false);
-  const [settingsView, setSettingsView] = useState(null); // null | 'profile' | 'notifications'
+  const [settingsView, setSettingsView] = useState(null);
   const [profileForm, setProfileForm] = useState({ name: '' });
+  const [weekOffset, setWeekOffset] = useState(0);
 
   // Auth
   const [authMode, setAuthMode] = useState('login');
@@ -342,7 +343,6 @@ export default function App() {
       return d;
     });
   };
-  const [weekOffset, setWeekOffset] = useState(0);
   const weekDays = getWeekDays(weekOffset);
   const DAYS_RU = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   const MONTHS_RU = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
