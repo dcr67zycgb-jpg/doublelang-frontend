@@ -70,6 +70,7 @@ function App() {
   const [roomId, setRoomId] = useState('');
   const [blocks, setBlocks] = useState([]);
   const [lessonsList, setLessonsList] = useState([]);
+  const [usersList, setUsersList] = useState([]);
   const [authMode, setAuthMode] = useState('login'); // 'login' или 'register'
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '', role: 'student' });
   const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000'; // Замените VITE_API_URL на URL Render в .env для деплоя
@@ -86,12 +87,19 @@ function App() {
 
     if (currentRoom) {
       setRoomId(currentRoom);
-    } else if (currentUser && currentUser.role === 'teacher') {
-      // Запрашиваем уроки только для текущего преподавателя
-      fetch(`${API_BASE_URL}/api/lessons?teacher_id=${currentUser.id}`)
-        .then(res => res.json())
-        .then(data => setLessonsList(data))
-        .catch(err => console.error('Ошибка загрузки уроков:', err));
+    } else if (currentUser) {
+      if (currentUser.role === 'teacher') {
+        fetch(`${API_BASE_URL}/api/lessons?teacher_id=${currentUser.id}`)
+          .then(res => res.json())
+          .then(data => setLessonsList(data))
+          .catch(err => console.error(err));
+      }
+      if (currentUser.role === 'admin') {
+        fetch(`${API_BASE_URL}/api/users`)
+          .then(res => res.json())
+          .then(data => setUsersList(data))
+          .catch(err => console.error(err));
+      }
     }
   }, [currentUser]);
 
@@ -301,8 +309,37 @@ function App() {
         {currentUser.role === 'admin' && (
           <div>
             <h2 style={{ color: '#9C27B0' }}>🛠️ Панель Администратора</h2>
-            <p>Здесь вы можете управлять всеми пользователями платформы, просматривать статистику оплат и блокировать аккаунты.</p>
-            <div style={{ background: '#f3e5f5', padding: '20px', borderRadius: '8px' }}>В разработке: Список всех пользователей БД...</div>
+            <p style={{ marginBottom: '20px' }}>Ниже представлен список всех зарегистрированных пользователей платформы DoubleLang:</p>
+            <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', boxShadow: '0 2px 5px rgba(0,0,0,0.1)', borderRadius: '8px', overflow: 'hidden' }}>
+              <thead>
+                <tr style={{ background: '#9C27B0', color: 'white', textAlign: 'left' }}>
+                  <th style={{ padding: '12px' }}>ID</th>
+                  <th style={{ padding: '12px' }}>Имя</th>
+                  <th style={{ padding: '12px' }}>Email</th>
+                  <th style={{ padding: '12px' }}>Роль на платформе</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usersList.map((user) => (
+                  <tr key={user.id} style={{ borderBottom: '1px solid #eee' }}>
+                    <td style={{ padding: '12px' }}>{user.id}</td>
+                    <td style={{ padding: '12px', fontWeight: 'bold' }}>{user.name}</td>
+                    <td style={{ padding: '12px' }}>{user.email}</td>
+                    <td style={{ padding: '12px' }}>
+                      <span style={{
+                        padding: '4px 8px',
+                        borderRadius: '4px',
+                        fontSize: '14px',
+                        background: user.role === 'admin' ? '#f3e5f5' : user.role === 'teacher' ? '#e3f2fd' : '#fff3e0',
+                        color: user.role === 'admin' ? '#9C27B0' : user.role === 'teacher' ? '#2196F3' : '#E65100'
+                      }}>
+                        {user.role === 'admin' ? 'Администратор' : user.role === 'teacher' ? 'Преподаватель' : 'Ученик'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
 
