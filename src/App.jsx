@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
 
-// Компонент для совместного рисования
+const API_URL = import.meta.env.VITE_API_URL || 'https://doublelang-backend.onrender.com';
+const pcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
 function DrawingBoard({ block, updateContent }) {
   const canvasRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
 
-  // Загружаем рисунок собеседника при обновлении данных
   useEffect(() => {
     if (!block.content) return;
     const canvas = canvasRef.current;
@@ -36,7 +37,6 @@ function DrawingBoard({ block, updateContent }) {
   const stopDrawing = () => {
     if (!isDrawing) return;
     setIsDrawing(false);
-    // Сохраняем рисунок как текст (Base64) и отправляем на сервер
     updateContent(block.id, canvasRef.current.toDataURL());
   };
 
@@ -44,18 +44,15 @@ function DrawingBoard({ block, updateContent }) {
     <canvas
       ref={canvasRef}
       width={750}
-      height={300}
+      height={250}
       onMouseDown={startDrawing}
       onMouseMove={draw}
       onMouseUp={stopDrawing}
       onMouseOut={stopDrawing}
-      style={{ width: '100%', cursor: 'crosshair', touchAction: 'none' }}
+      style={{ width: '100%', cursor: 'crosshair', touchAction: 'none', background: '#fff' }}
     />
   );
 }
-
-// Бесплатные сервера Google для помощи в установке P2P соединения
-const pcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
 function App() {
   const [currentUser, setCurrentUser] = useState(() => {
@@ -66,20 +63,31 @@ function App() {
     const saved = localStorage.getItem('doublelang_user');
     return saved ? JSON.parse(saved).role : null;
   });
+
   const [socket, setSocket] = useState(null);
   const [roomId, setRoomId] = useState('');
   const [blocks, setBlocks] = useState([]);
   const [lessonsList, setLessonsList] = useState([]);
   const [usersList, setUsersList] = useState([]);
-  const [authMode, setAuthMode] = useState('login'); // 'login' или 'register'
+  const [homeworkList, setHomeworkList] = useState([]);
+  const [hwForm, setHwForm] = useState({ studentEmail: '', title: '' });
+
+  const [authMode, setAuthMode] = useState('login');
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '', role: 'student' });
-  const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000'; // Замените VITE_API_URL на URL Render в .env для деплоя
-  
+
   const [localStream, setLocalStream] = useState(null);
   const myVideoRef = useRef();
-  const remoteVideoRef = useRef(); // Окно собеседника
-  const pcRef = useRef(null); // Само соединение WebRTC
-  const localStreamRef = useRef(null); // Ссылка на наш видеопоток
+  const remoteVideoRef = useRef();
+  const pcRef = useRef(null);
+  const localStreamRef = useRef(null);
+
+  const theme = {
+    card: { background: '#ffffff', borderRadius: '12px', padding: '24px', boxShadow: '0 4px 12px rgba(0,0,0,0.05)', border: '1px solid #eaeaea', marginBottom: '16px' },
+    input: { padding: '12px 16px', borderRadius: '8px', border: '1px solid #ccc', fontSize: '16px', outline: 'none', width: '100%', boxSizing: 'border-box' },
+    btnPrimary: { padding: '12px 24px', background: '#4F46E5', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '16px' },
+    btnSuccess: { padding: '10px 20px', background: '#10B981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '500' },
+    btnDanger: { padding: '10px 20px', background: '#EF4444', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: '500' }
+  };
 
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -89,16 +97,18 @@ function App() {
       setRoomId(currentRoom);
     } else if (currentUser) {
       if (currentUser.role === 'teacher') {
-        fetch(`${API_BASE_URL}/api/lessons?teacher_id=${currentUser.id}`)
-          .then(res => res.json())
-          .then(data => setLessonsList(data))
-          .catch(err => console.error(err));
+        fetch(`${API_URL}/api/lessons?teacher_id=${currentUser.id}`)
+          .then(res => res.json()).then(data => setLessonsList(data)).catch(console.error);
+        fetch(`${API_URL}/api/homework/teacher?teacher_id=${currentUser.id}`)
+          .then(res => res.json()).then(data => setHomeworkList(data)).catch(console.error);
+      }
+      if (currentUser.role === 'student') {
+        fetch(`${API_URL}/api/homework/student?email=${currentUser.email}`)
+          .then(res => res.json()).then(data => setHomeworkList(data)).catch(console.error);
       }
       if (currentUser.role === 'admin') {
-        fetch(`${API_BASE_URL}/api/users`)
-          .then(res => res.json())
-          .then(data => setUsersList(data))
-          .catch(err => console.error(err));
+        fetch(`${API_URL}/api/users`)
+          .then(res => res.json()).then(data => setUsersList(data)).catch(console.error);
       }
     }
   }, [currentUser]);
@@ -106,120 +116,39 @@ function App() {
   useEffect(() => {
     if (!role || !roomId) return;
 
-    const newSocket = io(API_BASE_URL, {
-      query: { 
-        roomId: roomId, 
-        userName: currentUser ? currentUser.name : (role === 'teacher' ? 'Преподаватель' : 'Ученик'),
-        userId: currentUser ? currentUser.id : null // Передаем ID
+    const newSocket = io(API_URL, {
+      query: {
+        roomId,
+        userName: currentUser ? currentUser.name : 'Пользователь',
+        userId: currentUser ? currentUser.id : null
       }
     });
     setSocket(newSocket);
 
     newSocket.on('update_board', (newBlocks) => setBlocks(newBlocks || []));
 
-    // --- ОБРАБОТКА ВХОДЯЩИХ ЗВОНКОВ WEBRTC ---
     newSocket.on('webrtc_offer', async (offer) => {
       const pc = new RTCPeerConnection(pcConfig);
       pcRef.current = pc;
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate) newSocket.emit('webrtc_ice_candidate', event.candidate);
-      };
-
-      pc.ontrack = (event) => {
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
-      };
-
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current));
-      }
-
+      pc.onicecandidate = (e) => e.candidate && newSocket.emit('webrtc_ice_candidate', e.candidate);
+      pc.ontrack = (e) => remoteVideoRef.current && (remoteVideoRef.current.srcObject = e.streams[0]);
+      if (localStreamRef.current) localStreamRef.current.getTracks().forEach(t => pc.addTrack(t, localStreamRef.current));
       await pc.setRemoteDescription(offer);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       newSocket.emit('webrtc_answer', answer);
     });
 
-    newSocket.on('webrtc_answer', async (answer) => {
-      if (pcRef.current) await pcRef.current.setRemoteDescription(answer);
-    });
-
-    newSocket.on('webrtc_ice_candidate', async (candidate) => {
-      if (pcRef.current) await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-    });
+    newSocket.on('webrtc_answer', async (ans) => pcRef.current && await pcRef.current.setRemoteDescription(ans));
+    newSocket.on('webrtc_ice_candidate', async (can) => pcRef.current && await pcRef.current.addIceCandidate(new RTCIceCandidate(can)));
 
     return () => newSocket.disconnect();
   }, [role, roomId]);
 
-  // --- ИНИЦИАЛИЗАЦИЯ КАМЕРЫ И ЗВОНКА ---
-  const turnOnCamera = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setLocalStream(stream);
-      localStreamRef.current = stream;
-      if (myVideoRef.current) myVideoRef.current.srcObject = stream;
-
-      const pc = new RTCPeerConnection(pcConfig);
-      pcRef.current = pc;
-
-      pc.onicecandidate = (event) => {
-        if (event.candidate) socket.emit('webrtc_ice_candidate', event.candidate);
-      };
-
-      pc.ontrack = (event) => {
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
-      };
-
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('webrtc_offer', offer);
-
-    } catch (err) {
-      console.error("Ошибка доступа к камере:", err);
-    }
-  };
-
-  const addBlock = (type) => {
-    // Если это тест, создаем структуру объекта. Иначе - пустая строка.
-    let defaultContent = '';
-    if (type === 'quiz') {
-      defaultContent = {
-        question: '',
-        options: ['', '', '', ''], // 4 пустых варианта
-        correctAnswer: 0, // Индекс правильного ответа
-        studentAnswer: null // Что выбрал ученик
-      };
-    }
-    const newBlocks = [...blocks, { id: Date.now(), type: type, content: defaultContent }];
-    setBlocks(newBlocks);
-    socket.emit('board_change', newBlocks);
-  };
-
-  // Специальная функция для обновления частей теста
-  const updateQuiz = (id, field, value) => {
-    const newBlocks = blocks.map(block => {
-      if (block.id === id) {
-        return { ...block, content: { ...block.content, [field]: value } };
-      }
-      return block;
-    });
-    setBlocks(newBlocks);
-    socket.emit('board_change', newBlocks);
-  };
-
-  const updateBlockContent = (id, newContent) => {
-    const newBlocks = blocks.map(block => block.id === id ? { ...block, content: newContent } : block);
-    setBlocks(newBlocks);
-    socket.emit('board_change', newBlocks);
-  };
-
-  // --- ФУНКЦИЯ АВТОРИЗАЦИИ ---
   const handleAuth = async (e) => {
     e.preventDefault();
     const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
-    const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+    const res = await fetch(`${API_URL}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(authForm)
@@ -227,12 +156,11 @@ function App() {
     const data = await res.json();
     if (data.token) {
       setCurrentUser(data.user);
-      setRole(data.user.role); // Автоматически назначаем роль для доски
-      // СОХРАНЯЕМ СЕССИЮ В БРАУЗЕР
+      setRole(data.user.role);
       localStorage.setItem('doublelang_user', JSON.stringify(data.user));
       localStorage.setItem('doublelang_token', data.token);
     } else if (data.id) {
-      alert('Успешная регистрация! Теперь войдите в аккаунт.');
+      alert('Успешно! Теперь войдите.');
       setAuthMode('login');
     } else {
       alert(data.error);
@@ -242,12 +170,53 @@ function App() {
   const logout = () => {
     setCurrentUser(null);
     setRole(null);
-    // ОЧИЩАЕМ ПАМЯТЬ ПРИ ВЫХОДЕ
-    localStorage.removeItem('doublelang_user');
-    localStorage.removeItem('doublelang_token');
-    setRoomId('');
-    if (socket) socket.disconnect();
-    setSocket(null);
+    localStorage.clear();
+  };
+
+  const assignHomework = async (e) => {
+    e.preventDefault();
+    const res = await fetch(`${API_URL}/api/homework/assign`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        teacher_id: currentUser.id,
+        student_email: hwForm.studentEmail,
+        title: hwForm.title,
+        board_content: [{ id: Date.now(), type: 'text', content: 'Решите задание здесь...' }]
+      })
+    });
+    if (res.ok) {
+      alert('Домашнее задание успешно отправлено ученику!');
+      setHwForm({ studentEmail: '', title: '' });
+      fetch(`${API_URL}/api/homework/teacher?teacher_id=${currentUser.id}`)
+        .then(res => res.json()).then(data => setHomeworkList(data));
+    }
+  };
+
+  const turnOnCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      localStreamRef.current = stream;
+      if (myVideoRef.current) myVideoRef.current.srcObject = stream;
+
+      const pc = new RTCPeerConnection(pcConfig);
+      pcRef.current = pc;
+      pc.onicecandidate = (e) => e.candidate && socket.emit('webrtc_ice_candidate', e.candidate);
+      pc.ontrack = (e) => remoteVideoRef.current && (remoteVideoRef.current.srcObject = e.streams[0]);
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('webrtc_offer', offer);
+    } catch (err) { console.error(err); }
+  };
+
+  const addBlock = (type) => {
+    let content = '';
+    if (type === 'quiz') content = { question: '', options: ['', '', '', ''], correctAnswer: 0, studentAnswer: null };
+    const newBlocks = [...blocks, { id: Date.now(), type, content }];
+    setBlocks(newBlocks);
+    socket.emit('board_change', newBlocks);
   };
 
   const handleClear = () => {
@@ -255,275 +224,274 @@ function App() {
     socket.emit('board_change', []);
   };
 
+  const updateBlockContent = (id, text) => {
+    const newBlocks = blocks.map(b => b.id === id ? { ...b, content: text } : b);
+    setBlocks(newBlocks);
+    socket.emit('board_change', newBlocks);
+  };
+
+  const updateQuiz = (id, field, value) => {
+    const newBlocks = blocks.map(b => b.id === id ? { ...b, content: { ...b.content, [field]: value } } : b);
+    setBlocks(newBlocks);
+    socket.emit('board_change', newBlocks);
+  };
+
   const createNewLesson = () => {
-    const newRoom = Math.random().toString(36).substring(7);
-    window.history.pushState(null, null, '?lesson=' + newRoom);
-    setRoomId(newRoom);
+    const room = Math.random().toString(36).substring(7);
+    window.history.pushState(null, null, '?lesson=' + room);
+    setRoomId(room);
   };
 
   const joinLesson = (id) => {
+    if (!id) return;
     window.history.pushState(null, null, '?lesson=' + id);
     setRoomId(id);
   };
 
+  // Экран авторизации
   if (!currentUser && !roomId) {
     return (
-      <div style={{ padding: '40px', fontFamily: 'sans-serif', maxWidth: '400px', margin: '50px auto', background: '#f9f9f9', borderRadius: '8px', border: '1px solid #ddd' }}>
-        <h1 style={{ textAlign: 'center', color: '#333' }}>DoubleLang</h1>
-        <h2 style={{ textAlign: 'center' }}>{authMode === 'login' ? 'Вход' : 'Регистрация'}</h2>
-        
-        <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-          {authMode === 'register' && (
-            <>
-              <input type="text" placeholder="Ваше Имя" required value={authForm.name} onChange={e => setAuthForm({...authForm, name: e.target.value})} style={{ padding: '10px' }} />
-              <select value={authForm.role} onChange={e => setAuthForm({...authForm, role: e.target.value})} style={{ padding: '10px' }}>
-                <option value="student">Я Ученик</option>
-                <option value="teacher">Я Преподаватель</option>
-                <option value="admin">Я Администратор</option>
-              </select>
-            </>
-          )}
-          <input type="email" placeholder="Email" required value={authForm.email} onChange={e => setAuthForm({...authForm, email: e.target.value})} style={{ padding: '10px' }} />
-          <input type="password" placeholder="Пароль" required value={authForm.password} onChange={e => setAuthForm({...authForm, password: e.target.value})} style={{ padding: '10px' }} />
-          
-          <button type="submit" style={{ padding: '12px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px' }}>
-            {authMode === 'login' ? 'Войти' : 'Зарегистрироваться'}
-          </button>
-        </form>
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F3F4F6', fontFamily: 'system-ui' }}>
+        <div style={{ ...theme.card, width: '100%', maxWidth: '420px', padding: '32px' }}>
+          <h1 style={{ textAlign: 'center', fontSize: '32px', margin: '0 0 8px 0', color: '#4F46E5', fontWeight: '800' }}>DoubleLang</h1>
+          <p style={{ textAlign: 'center', color: '#6B7280', margin: '0 0 24px 0' }}>Платформа умного обучения языкам</p>
 
-        <p style={{ textAlign: 'center', marginTop: '20px', cursor: 'pointer', color: '#2196F3' }} onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>
-          {authMode === 'login' ? 'Нет аккаунта? Создать' : 'Уже есть аккаунт? Войти'}
-        </p>
+          <form onSubmit={handleAuth} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {authMode === 'register' && (
+              <>
+                <input type="text" placeholder="Ваше имя" required value={authForm.name} onChange={e => setAuthForm({...authForm, name: e.target.value})} style={theme.input} />
+                <select value={authForm.role} onChange={e => setAuthForm({...authForm, role: e.target.value})} style={theme.input}>
+                  <option value="student">Я Ученик 🧑‍🎓</option>
+                  <option value="teacher">Я Преподаватель 👨‍🏫</option>
+                  <option value="admin">Я Администратор 🛠️</option>
+                </select>
+              </>
+            )}
+            <input type="email" placeholder="Электронная почта" required value={authForm.email} onChange={e => setAuthForm({...authForm, email: e.target.value})} style={theme.input} />
+            <input type="password" placeholder="Пароль" required value={authForm.password} onChange={e => setAuthForm({...authForm, password: e.target.value})} style={theme.input} />
+            <button type="submit" style={theme.btnPrimary}>{authMode === 'login' ? 'Войти в личный кабинет' : 'Зарегистрироваться'}</button>
+          </form>
+          <p style={{ textAlign: 'center', marginTop: '20px', color: '#4F46E5', cursor: 'pointer', fontWeight: '500' }} onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>
+            {authMode === 'login' ? 'Еще нет аккаунта? Создать' : 'Уже зарегистрированы? Войти'}
+          </p>
+        </div>
       </div>
     );
   }
 
+  // Экраны личных кабинетов
   if (currentUser && !roomId) {
     return (
-      <div style={{ padding: '40px', fontFamily: 'sans-serif', maxWidth: '900px', margin: '0 auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px', borderBottom: '2px solid #eee', paddingBottom: '20px' }}>
-          <h1>DoubleLang | Добро пожаловать, {currentUser.name}</h1>
-          <button onClick={logout} style={{ padding: '8px 15px', background: '#ff4d4f', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>Выйти</button>
-        </div>
+      <div style={{ minHeight: '100vh', background: '#F9FAFB', fontFamily: 'system-ui', padding: '32px' }}>
+        <div style={{ maxWidth: '1000px', margin: '0 auto' }}>
 
-        {currentUser.role === 'admin' && (
-          <div>
-            <h2 style={{ color: '#9C27B0' }}>🛠️ Панель Администратора</h2>
-            <p style={{ marginBottom: '20px' }}>Ниже представлен список всех зарегистрированных пользователей платформы DoubleLang:</p>
-            <table style={{ width: '100%', borderCollapse: 'collapse', background: '#fff', boxShadow: '0 2px 5px rgba(0,0,0,0.1)', borderRadius: '8px', overflow: 'hidden' }}>
-              <thead>
-                <tr style={{ background: '#9C27B0', color: 'white', textAlign: 'left' }}>
-                  <th style={{ padding: '12px' }}>ID</th>
-                  <th style={{ padding: '12px' }}>Имя</th>
-                  <th style={{ padding: '12px' }}>Email</th>
-                  <th style={{ padding: '12px' }}>Роль на платформе</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usersList.map((user) => (
-                  <tr key={user.id} style={{ borderBottom: '1px solid #eee' }}>
-                    <td style={{ padding: '12px' }}>{user.id}</td>
-                    <td style={{ padding: '12px', fontWeight: 'bold' }}>{user.name}</td>
-                    <td style={{ padding: '12px' }}>{user.email}</td>
-                    <td style={{ padding: '12px' }}>
-                      <span style={{
-                        padding: '4px 8px',
-                        borderRadius: '4px',
-                        fontSize: '14px',
-                        background: user.role === 'admin' ? '#f3e5f5' : user.role === 'teacher' ? '#e3f2fd' : '#fff3e0',
-                        color: user.role === 'admin' ? '#9C27B0' : user.role === 'teacher' ? '#2196F3' : '#E65100'
-                      }}>
-                        {user.role === 'admin' ? 'Администратор' : user.role === 'teacher' ? 'Преподаватель' : 'Ученик'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {currentUser.role === 'teacher' && (
-          <div>
-            <h2 style={{ color: '#2196F3' }}>👨‍🏫 Кабинет Преподавателя</h2>
-            <button onClick={createNewLesson} style={{ padding: '15px 20px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', marginBottom: '20px' }}>+ Создать новый урок</button>
-            <h3>Ваши созданные курсы и уроки:</h3>
-            {lessonsList.length === 0 ? <p>Уроков пока нет.</p> : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {lessonsList.map((lesson, index) => (
-                  <button key={index} onClick={() => joinLesson(lesson.room_id)} style={{ padding: '15px', textAlign: 'left', background: '#e3f2fd', border: '1px solid #90caf9', borderRadius: '5px', cursor: 'pointer' }}>
-                    Перейти в комнату: <strong>{lesson.room_id}</strong>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {currentUser.role === 'student' && (
-          <div>
-            <h2 style={{ color: '#FF9800' }}>🧑‍🎓 Мое обучение</h2>
-            <p>Вставьте ссылку или ID урока, который отправил преподаватель, чтобы присоединиться:</p>
-            <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
-               <input type="text" placeholder="Например: 7xb8f" id="join-input" style={{ padding: '10px', flexGrow: 1, border: '1px solid #ccc', borderRadius: '4px' }} />
-               <button onClick={() => joinLesson(document.getElementById('join-input').value)} style={{ padding: '10px 20px', background: '#FF9800', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-                 Присоединиться к уроку
-               </button>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px', background: '#fff', padding: '16px 24px', borderRadius: '12px', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' }}>
+            <div>
+              <span style={{ fontSize: '14px', fontWeight: '700', color: '#4F46E5' }}>DoubleLang Платформа</span>
+              <h1 style={{ margin: '4px 0 0 0', fontSize: '24px', color: '#111827' }}>Привет, {currentUser.name}! 🌟</h1>
             </div>
-            <h3 style={{ marginTop: '40px' }}>История уроков:</h3>
-            <p style={{ color: 'gray' }}>Здесь будут отображаться ваши прошедшие занятия и домашние задания.</p>
+            <button onClick={logout} style={{ padding: '8px 16px', background: '#F3F4F6', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: '600', color: '#4B5563' }}>Выйти</button>
           </div>
-        )}
-      </div>
-    );
-  }
 
-  if (!role) {
-    return (
-      <div style={{ padding: '40px', fontFamily: 'sans-serif' }}>
-        <h1>Урок {roomId} 🎓</h1>
-        <button onClick={() => setRole('teacher')} style={{ marginRight: '10px', padding: '10px' }}>Я Преподаватель 👨‍🏫</button>
-        <button onClick={() => setRole('student')} style={{ padding: '10px' }}>Я Ученик 🧑‍🎓</button>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ padding: '20px', fontFamily: 'sans-serif', maxWidth: '800px', margin: '0 auto' }}>
-      <h2>Урок: {roomId} | {role === 'teacher' ? 'Преподаватель' : 'Ученик'}</h2>
-      
-      {/* ПАНЕЛЬ ВИДЕОСВЯЗИ */}
-      <div style={{ display: 'flex', gap: '15px', marginBottom: '20px', padding: '15px', background: '#f0f2f5', borderRadius: '8px', flexWrap: 'wrap' }}>
-        
-        {/* Мое видео */}
-        <div style={{ width: '250px', height: '180px', background: '#000', borderRadius: '8px', overflow: 'hidden', position: 'relative' }}>
-          <video ref={myVideoRef} autoPlay muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', display: localStream ? 'block' : 'none' }}></video>
-          {!localStream && <div style={{ color: 'white', position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' }}>Камера выключена</div>}
-        </div>
-
-        {/* Видео собеседника */}
-        <div style={{ width: '250px', height: '180px', background: '#000', borderRadius: '8px', overflow: 'hidden', position: 'relative' }}>
-          <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }}></video>
-          <div style={{ color: 'white', position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 0 }}>Собеседник</div>
-        </div>
-        
-        {!localStream && (
-          <button onClick={turnOnCamera} style={{ alignSelf: 'center', padding: '10px 20px', background: '#673ab7', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>Включить камеру 🎥</button>
-        )}
-      </div>
-
-      {role === 'teacher' && (
-        <div style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
-          <button onClick={() => addBlock('text')} style={{ padding: '10px', background: '#4CAF50', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>+ Текст</button>
-          <button onClick={() => addBlock('video')} style={{ padding: '10px', background: '#2196F3', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>+ Видео</button>
-          <button onClick={() => addBlock('quiz')} style={{ padding: '10px', background: '#FF9800', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>+ Задание (Тест)</button>
-          <button onClick={() => addBlock('canvas')} style={{ padding: '10px', background: '#9C27B0', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>+ Рисование 🎨</button>
-          <button onClick={handleClear} style={{ padding: '10px', background: '#ff4d4f', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer' }}>Очистить</button>
-        </div>
-      )}
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-        {blocks.map((block) => (
-          <div key={block.id} style={{ border: '2px solid #e0e0e0', padding: '15px', borderRadius: '8px', background: '#fafafa' }}>
-            {block.type === 'text' && <textarea value={block.content} onChange={(e) => updateBlockContent(block.id, e.target.value)} style={{ width: '100%', minHeight: '100px', fontSize: '18px', padding: '10px', border: '1px solid #ccc', borderRadius: '4px', resize: 'vertical' }} placeholder="Текст..." />}
-            {block.type === 'video' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <input type="text" value={block.content} onChange={(e) => updateBlockContent(block.id, e.target.value)} placeholder="Ссылка YouTube..." style={{ width: '100%', padding: '10px', border: '1px solid #ccc', borderRadius: '4px' }} />
-                {block.content && <iframe width="100%" height="315" src={block.content.includes('watch?v=') ? block.content.replace('watch?v=', 'embed/') : block.content} frameBorder="0" allowFullScreen></iframe>}
+          {/* КАБИНЕТ УЧИТЕЛЯ */}
+          {currentUser.role === 'teacher' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+              <div>
+                <div style={theme.card}>
+                  <h2 style={{ margin: '0 0 16px 0', fontSize: '20px' }}>👨‍🏫 Проведение онлайн-уроков</h2>
+                  <button onClick={createNewLesson} style={theme.btnPrimary}>+ Запустить интерактивную доску</button>
+                </div>
+                <div style={theme.card}>
+                  <h3 style={{ margin: '0 0 12px 0' }}>Активные комнаты уроков:</h3>
+                  {lessonsList.length === 0 ? <p style={{ color: 'gray' }}>Вы еще не создавали комнат.</p> : (
+                    lessonsList.map((l, i) => (
+                      <div key={i} onClick={() => joinLesson(l.room_id)} style={{ padding: '12px', background: '#F3F4F6', borderRadius: '8px', cursor: 'pointer', marginBottom: '8px', fontWeight: '500' }}>
+                        🔗 Урок ID: {l.room_id}
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
-            )}
-            {block.type === 'quiz' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {role === 'teacher' ? (
-                  /* ИНТЕРФЕЙС УЧИТЕЛЯ: СОЗДАНИЕ ТЕСТА */
-                  <>
-                    <div style={{ background: '#fff9c4', padding: '10px', borderRadius: '4px', fontSize: '14px', marginBottom: '10px' }}>
-                      Режим редактирования. Отметьте кружком правильный вариант ответа.
-                    </div>
-                    <input 
-                      type="text" 
-                      placeholder="Введите вопрос..." 
-                      value={block.content.question} 
-                      onChange={(e) => updateQuiz(block.id, 'question', e.target.value)} 
-                      style={{ width: '100%', padding: '10px', fontSize: '18px', border: '1px solid #ccc', borderRadius: '4px', fontWeight: 'bold' }}
-                    />
-                    {block.content.options.map((opt, i) => (
-                      <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                        <input 
-                          type="radio" 
-                          name={`correct-${block.id}`} 
-                          checked={block.content.correctAnswer === i} 
-                          onChange={() => updateQuiz(block.id, 'correctAnswer', i)}
-                          style={{ transform: 'scale(1.5)' }}
-                        />
-                        <input 
-                          type="text" 
-                          placeholder={`Вариант ${i + 1}`} 
-                          value={opt} 
-                          onChange={(e) => {
-                            const newOptions = [...block.content.options];
-                            newOptions[i] = e.target.value;
-                            updateQuiz(block.id, 'options', newOptions);
-                          }} 
-                          style={{ flexGrow: 1, padding: '8px', border: '1px solid #ccc', borderRadius: '4px' }}
-                        />
-                      </div>
-                    ))}
-                    {block.content.studentAnswer !== null && (
-                      <div style={{ marginTop: '10px', color: block.content.studentAnswer === block.content.correctAnswer ? 'green' : 'red', fontWeight: 'bold' }}>
-                        Ученик выбрал вариант №{block.content.studentAnswer + 1}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  /* ИНТЕРФЕЙС УЧЕНИКА: ПРОХОЖДЕНИЕ ТЕСТА */
-                  <>
-                    <h3 style={{ margin: '0 0 10px 0' }}>{block.content.question || 'Вопрос загружается...'}</h3>
-                    {block.content.options.map((opt, i) => {
-                      if (!opt) return null;
-                      
-                      const isSelected = block.content.studentAnswer === i;
-                      const isCorrect = isSelected && i === block.content.correctAnswer;
-                      const isWrong = isSelected && i !== block.content.correctAnswer;
-                      
-                      let bgColor = 'white';
-                      let borderColor = '#ccc';
-                      if (isSelected) {
-                        bgColor = isCorrect ? '#d4edda' : '#f8d7da';
-                        borderColor = isCorrect ? '#c3e6cb' : '#f5c6cb';
-                      }
 
-                      return (
-                        <div key={i} style={{ padding: '10px', background: bgColor, border: `1px solid ${borderColor}`, borderRadius: '4px', marginBottom: '5px' }}>
-                          <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-                            <input 
-                              type="radio" 
-                              name={`student-${block.id}`} 
-                              checked={isSelected} 
-                              onChange={() => updateQuiz(block.id, 'studentAnswer', i)}
-                              disabled={block.content.studentAnswer !== null}
-                            />
-                            {opt}
-                          </label>
-                        </div>
-                      );
-                    })}
-                  </>
+              <div>
+                <div style={theme.card}>
+                  <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', color: '#10B981' }}>📝 Назначить домашнее задание</h2>
+                  <form onSubmit={assignHomework} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <input type="email" placeholder="Email ученика" required value={hwForm.studentEmail} onChange={e => setHwForm({...hwForm, studentEmail: e.target.value})} style={theme.input} />
+                    <input type="text" placeholder="Название задания (например: Презент Симпл)" required value={hwForm.title} onChange={e => setHwForm({...hwForm, title: e.target.value})} style={theme.input} />
+                    <button type="submit" style={{ ...theme.btnPrimary, background: '#10B981' }}>Отправить задание</button>
+                  </form>
+                </div>
+                <div style={theme.card}>
+                  <h3 style={{ margin: '0 0 12px 0' }}>Статус отправленных ДЗ:</h3>
+                  {homeworkList.length === 0 ? <p style={{ color: 'gray' }}>Вы ещё не назначали заданий.</p> : (
+                    homeworkList.map((hw, i) => (
+                      <div key={i} onClick={() => joinLesson(hw.hw_id)} style={{ display: 'flex', justifyContent: 'space-between', padding: '12px', background: '#fff', border: '1px solid #eee', borderRadius: '8px', marginBottom: '8px', cursor: 'pointer' }}>
+                        <div><strong>{hw.title}</strong><br /><span style={{ fontSize: '12px', color: 'gray' }}>для {hw.student_email}</span></div>
+                        <span style={{ color: hw.status === 'completed' ? 'green' : 'orange', fontWeight: 'bold' }}>{hw.status === 'completed' ? 'Выполнено' : 'В процессе'}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* КАБИНЕТ УЧЕНИКА */}
+          {currentUser.role === 'student' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+              <div style={theme.card}>
+                <h2 style={{ margin: '0 0 16px 0', fontSize: '20px' }}>🔗 Подключение к онлайн-уроку</h2>
+                <p style={{ color: '#6B7280', fontSize: '14px' }}>Введите код комнаты, который вам скинул преподаватель:</p>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <input type="text" placeholder="Код (например: x9f2a)" id="join-room" style={theme.input} />
+                  <button onClick={() => joinLesson(document.getElementById('join-room').value)} style={theme.btnPrimary}>Войти</button>
+                </div>
+              </div>
+              <div style={theme.card}>
+                <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', color: '#10B981' }}>📚 Мои Домашние Задания</h2>
+                {homeworkList.length === 0 ? <p style={{ color: 'gray' }}>У вас пока нет назначенных домашних заданий.</p> : (
+                  homeworkList.map((hw, i) => (
+                    <div key={i} onClick={() => joinLesson(hw.hw_id)} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px', background: '#F3F4F6', borderRadius: '8px', marginBottom: '8px', cursor: 'pointer' }}>
+                      <span>📖 <strong>{hw.title}</strong></span>
+                      <span style={{ padding: '4px 8px', borderRadius: '4px', background: hw.status === 'completed' ? '#D1FAE5' : '#FEF3C7', color: hw.status === 'completed' ? '#065F46' : '#92400E', fontSize: '13px', fontWeight: '600' }}>
+                        {hw.status === 'completed' ? 'Сдано' : 'Выполнить'}
+                      </span>
+                    </div>
+                  ))
                 )}
               </div>
-            )}
-            {block.type === 'canvas' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ padding: '5px 10px', background: '#f0f2f5', borderRadius: '4px', fontSize: '14px', color: 'gray' }}>
-                  Совместная доска (рисуйте мышкой)
-                </div>
-                <div style={{ border: '1px solid #ccc', borderRadius: '4px', background: '#fff', overflow: 'hidden' }}>
-                  <DrawingBoard block={block} updateContent={updateBlockContent} />
-                </div>
-              </div>
-            )}
+            </div>
+          )}
+
+          {/* КАБИНЕТ АДМИНИСТРАТОРА */}
+          {currentUser.role === 'admin' && (
+            <div style={theme.card}>
+              <h2 style={{ color: '#9C27B0', margin: '0 0 16px 0' }}>🛠️ Контроль пользователей DoubleLang</h2>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ background: '#F3F4F6', textAlign: 'left' }}>
+                    <th style={{ padding: '12px' }}>ID</th>
+                    <th style={{ padding: '12px' }}>Имя</th>
+                    <th style={{ padding: '12px' }}>Email</th>
+                    <th style={{ padding: '12px' }}>Роль</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usersList.map((u) => (
+                    <tr key={u.id} style={{ borderBottom: '1px solid #eee' }}>
+                      <td style={{ padding: '12px' }}>{u.id}</td>
+                      <td style={{ padding: '12px', fontWeight: '600' }}>{u.name}</td>
+                      <td style={{ padding: '12px' }}>{u.email}</td>
+                      <td style={{ padding: '12px', color: u.role === 'teacher' ? '#2196F3' : '#FF9800' }}>{u.role}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+        </div>
+      </div>
+    );
+  }
+
+  // Интерактивная доска
+  return (
+    <div style={{ minHeight: '100vh', background: '#F3F4F6', fontFamily: 'system-ui', padding: '24px' }}>
+      <div style={{ maxWidth: '1100px', margin: '0 auto', display: 'flex', gap: '24px' }}>
+
+        {/* Видеосвязь */}
+        <div style={{ width: '280px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={theme.card}>
+            <h4 style={{ margin: '0 0 12px 0' }}>Видеочат класса</h4>
+            <div style={{ height: '160px', background: '#111827', borderRadius: '8px', overflow: 'hidden', marginBottom: '8px', position: 'relative' }}>
+              <video ref={myVideoRef} autoPlay muted playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', display: localStream ? 'block' : 'none' }}></video>
+              {!localStream && <div style={{ color: 'white', fontSize: '13px', textAlign: 'center', paddingTop: '70px' }}>Ваша камера выключена</div>}
+            </div>
+            <div style={{ height: '160px', background: '#111827', borderRadius: '8px', overflow: 'hidden', position: 'relative', marginBottom: '12px' }}>
+              <video ref={remoteVideoRef} autoPlay playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }}></video>
+              <div style={{ color: 'white', fontSize: '13px', textAlign: 'center', paddingTop: '70px', position: 'absolute', width: '100%', top: 0, zIndex: 0 }}>Собеседник</div>
+            </div>
+            {!localStream && <button onClick={turnOnCamera} style={{ ...theme.btnPrimary, width: '100%', padding: '10px' }}>Включить связь 🎥</button>}
           </div>
-        ))}
+          <button onClick={() => window.location.href = '/'} style={{ ...theme.btnPrimary, background: '#6B7280' }}>← Выйти в меню</button>
+        </div>
+
+        {/* Интерактивная доска */}
+        <div style={{ flexGrow: 1 }}>
+          <div style={{ ...theme.card, background: '#fff' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid #eee', paddingBottom: '12px' }}>
+              <h2 style={{ margin: '0' }}>📋 {roomId.startsWith('hw_') ? 'Домашнее Задание' : 'Онлайн Урок'}: {roomId}</h2>
+              {role === 'teacher' && (
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button onClick={() => addBlock('text')} style={theme.btnSuccess}>+ Текст</button>
+                  <button onClick={() => addBlock('video')} style={{ ...theme.btnSuccess, background: '#2196F3' }}>+ Видео</button>
+                  <button onClick={() => addBlock('quiz')} style={{ ...theme.btnSuccess, background: '#FF9800' }}>+ Тест</button>
+                  <button onClick={() => addBlock('canvas')} style={{ ...theme.btnSuccess, background: '#9C27B0' }}>+ Рисование</button>
+                  <button onClick={handleClear} style={theme.btnDanger}>Очистить</button>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {blocks.length === 0 && <p style={{ color: 'gray', fontStyle: 'italic' }}>Здесь пока пусто...</p>}
+              {blocks.map((block) => (
+                <div key={block.id} style={{ padding: '16px', background: '#F9FAFB', border: '1px solid #E5E7EB', borderRadius: '8px' }}>
+
+                  {block.type === 'text' && (
+                    <textarea value={block.content} onChange={(e) => updateBlockContent(block.id, e.target.value)} style={{ ...theme.input, minHeight: '100px', resize: 'vertical' }} placeholder="Введите текст..." />
+                  )}
+
+                  {block.type === 'video' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <input type="text" value={block.content} onChange={(e) => updateBlockContent(block.id, e.target.value)} placeholder="Вставьте ссылку на YouTube..." style={theme.input} />
+                      {block.content && <iframe width="100%" height="360" src={block.content.includes('watch?v=') ? block.content.replace('watch?v=', 'embed/') : block.content} frameBorder="0" allowFullScreen style={{ borderRadius: '8px' }}></iframe>}
+                    </div>
+                  )}
+
+                  {block.type === 'canvas' && <DrawingBoard block={block} updateContent={updateBlockContent} />}
+
+                  {block.type === 'quiz' && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {role === 'teacher' ? (
+                        <>
+                          <input type="text" placeholder="Вопрос теста..." value={block.content.question} onChange={(e) => updateQuiz(block.id, 'question', e.target.value)} style={{ ...theme.input, fontWeight: 'bold' }} />
+                          {block.content.options.map((opt, i) => (
+                            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                              <input type="radio" name={`ans-${block.id}`} checked={block.content.correctAnswer === i} onChange={() => updateQuiz(block.id, 'correctAnswer', i)} />
+                              <input type="text" placeholder={`Вариант ${i + 1}`} value={opt} onChange={(e) => {
+                                const arr = [...block.content.options]; arr[i] = e.target.value; updateQuiz(block.id, 'options', arr);
+                              }} style={theme.input} />
+                            </div>
+                          ))}
+                        </>
+                      ) : (
+                        <>
+                          <h3 style={{ margin: '0 0 10px 0' }}>{block.content.question || 'Вопрос без заголовка'}</h3>
+                          {block.content.options.map((opt, i) => {
+                            if (!opt) return null;
+                            const isSel = block.content.studentAnswer === i;
+                            const isCorr = isSel && i === block.content.correctAnswer;
+                            return (
+                              <button key={i} onClick={() => updateQuiz(block.id, 'studentAnswer', i)} disabled={block.content.studentAnswer !== null} style={{
+                                width: '100%', padding: '12px', textAlign: 'left', marginBottom: '6px', borderRadius: '6px', border: '1px solid #ccc', cursor: 'pointer',
+                                background: isSel ? (isCorr ? '#D1FAE5' : '#FEE2E2') : '#fff',
+                                color: isSel ? (isCorr ? '#065F46' : '#991B1B') : '#000'
+                              }}>{opt}</button>
+                            );
+                          })}
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
       </div>
     </div>
   );
