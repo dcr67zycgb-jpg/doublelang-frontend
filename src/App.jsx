@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
+import InteractiveBoard from './components/InteractiveBoard';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://doublelang-backend.onrender.com';
 const pcConfig = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
@@ -36,14 +37,6 @@ const Tabs = ({ tabs, active, onChange }) => (
   </div>
 );
 
-function DrawingBoard({ block, updateContent }) {
-  const ref = useRef(null); const [drawing, setDrawing] = useState(false);
-  useEffect(() => { if (!block.content) return; const img = new Image(); img.onload = () => { const c = ref.current.getContext('2d'); c.clearRect(0,0,750,250); c.drawImage(img,0,0); }; img.src = block.content; }, [block.content]);
-  const start = e => { setDrawing(true); const c = ref.current.getContext('2d'); c.beginPath(); c.moveTo(e.nativeEvent.offsetX, e.nativeEvent.offsetY); };
-  const draw = e => { if (!drawing) return; const c = ref.current.getContext('2d'); c.lineTo(e.nativeEvent.offsetX, e.nativeEvent.offsetY); c.stroke(); };
-  const stop = () => { if (!drawing) return; setDrawing(false); updateContent(block.id, ref.current.toDataURL()); };
-  return <canvas ref={ref} width={750} height={250} onMouseDown={start} onMouseMove={draw} onMouseUp={stop} onMouseOut={stop} style={{ width: '100%', cursor: 'crosshair', touchAction: 'none', background: '#fff', borderRadius: '6px' }} />;
-}
 
 // ── Каталог материалов (статичный) ───────────────────────────────────────────
 const CATALOG = [
@@ -87,7 +80,15 @@ export default function App() {
   const [blocks, setBlocks] = useState([]);
   const [socket, setSocket] = useState(null);
   const [localStream, setLocalStream] = useState(null);
-  const myVideo = useRef(); const remoteVideo = useRef(); const pc = useRef(null); const streamRef = useRef(null);
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [isMicMuted, setIsMicMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(false);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const myVideo = useRef();
+  const peerConnections = useRef({});
+  const streamRef = useRef(null);
+  const chatEndRef = useRef(null);
 
   const [section, setSection] = useState('classes');
   const [selectedStudent, setSelectedStudent] = useState(null);
@@ -107,7 +108,7 @@ export default function App() {
   const [scheduleForm, setScheduleForm] = useState({ title: '', student_email: '', lesson_date: '', start_time: '09:00', end_time: '10:00' });
   const [showScheduleForm, setShowScheduleForm] = useState(false);
   const [settingsView, setSettingsView] = useState(null);
-  const [profileForm, setProfileForm] = useState({ name: '' });
+  const [profileForm, setProfileForm] = useState({ name: '', phone: '', about: '', language: '', timezone: 'UTC+3' });
   const [weekOffset, setWeekOffset] = useState(0);
 
   // Auth
@@ -123,6 +124,11 @@ export default function App() {
     filterBtn: { padding: '8px 14px', background: '#fff', border: `1px solid ${C.border}`, borderRadius: '8px', cursor: 'pointer', fontFamily: FONT, fontSize: '13px', color: C.sub, display: 'flex', alignItems: 'center', gap: '6px' },
   };
 
+  const authHeaders = () => {
+    const token = localStorage.getItem('doublelang_token');
+    return { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  };
+
   // Load data
   useEffect(() => {
     const room = new URLSearchParams(window.location.search).get('lesson');
@@ -130,19 +136,22 @@ export default function App() {
     if (!currentUser) return;
     const role = currentUser.role;
     if (role === 'teacher' || role === 'admin') {
-      fetch(`${API_URL}/api/users`).then(r => r.json()).then(setUsers).catch(() => {});
+      fetch(`${API_URL}/api/users`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setUsers(d) : null).catch(() => {});
     }
     if (role === 'teacher') {
-      fetch(`${API_URL}/api/lessons?teacher_id=${currentUser.id}`).then(r => r.json()).then(setLessons).catch(() => {});
-      fetch(`${API_URL}/api/homework/teacher?teacher_id=${currentUser.id}`).then(r => r.json()).then(setHw).catch(() => {});
-      fetch(`${API_URL}/api/schedule?teacher_id=${currentUser.id}`).then(r => r.json()).then(setScheduleData).catch(() => {});
-      setProfileForm({ name: currentUser.name });
+      fetch(`${API_URL}/api/lessons`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setLessons(d) : null).catch(() => {});
+      fetch(`${API_URL}/api/homework/teacher`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setHw(d) : null).catch(() => {});
+      fetch(`${API_URL}/api/schedule`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setScheduleData(d) : null).catch(() => {});
+      fetch(`${API_URL}/api/profile/${currentUser.id}`, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(d => d && setProfileForm({ name: d.name || '', phone: d.phone || '', about: d.about || '', language: d.language || '', timezone: d.timezone || 'UTC+3' }))
+        .catch(() => setProfileForm({ name: currentUser.name, phone: '', about: '', language: '', timezone: 'UTC+3' }));
     }
     if (role === 'admin') {
-      fetch(`${API_URL}/api/lessons`).then(r => r.json()).then(setLessons).catch(() => {});
+      fetch(`${API_URL}/api/lessons`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setLessons(d) : null).catch(() => {});
     }
     if (role === 'student') {
-      fetch(`${API_URL}/api/homework/student?email=${currentUser.email}`).then(r => r.json()).then(setHw).catch(() => {});
+      fetch(`${API_URL}/api/homework/student`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setHw(d) : null).catch(() => {});
       setSection('dashboard');
     }
     if (role === 'admin') setSection('stats');
@@ -150,25 +159,73 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedStudent) return;
-    fetch(`${API_URL}/api/homework/student?email=${selectedStudent.email}`).then(r => r.json()).then(setStudentHw).catch(() => {});
+    fetch(`${API_URL}/api/homework/student-by-email?email=${selectedStudent.email}`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setStudentHw(d) : null).catch(() => {});
   }, [selectedStudent]);
 
+  const createPeer = useCallback((sk, remoteSocketId) => {
+    const pc = new RTCPeerConnection(pcConfig);
+    peerConnections.current[remoteSocketId] = pc;
+    pc.onicecandidate = e => e.candidate && sk.emit('webrtc_ice_candidate', e.candidate, remoteSocketId);
+    pc.ontrack = e => setRemoteStreams(prev => ({ ...prev, [remoteSocketId]: e.streams[0] }));
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(t => pc.addTrack(t, streamRef.current));
+    }
+    return pc;
+  }, []);
+
   useEffect(() => {
-    if (!role || !roomId) return;
-    const sk = io(API_URL, { query: { roomId, userName: currentUser?.name || 'User', userId: currentUser?.id || null } });
+    if (!roomId) return;
+    const token = localStorage.getItem('doublelang_token');
+    const sk = io(API_URL, { auth: { token } });
     setSocket(sk);
+
+    sk.on('connect_error', err => console.warn('Socket auth error:', err.message));
+    sk.emit('join_room', roomId);
+    sk.emit('load_board');
+
     sk.on('update_board', b => setBlocks(b || []));
-    sk.on('webrtc_offer', async offer => {
-      const p = new RTCPeerConnection(pcConfig); pc.current = p;
-      p.onicecandidate = e => e.candidate && sk.emit('webrtc_ice_candidate', e.candidate);
-      p.ontrack = e => remoteVideo.current && (remoteVideo.current.srcObject = e.streams[0]);
-      if (streamRef.current) streamRef.current.getTracks().forEach(t => p.addTrack(t, streamRef.current));
-      await p.setRemoteDescription(offer); const ans = await p.createAnswer(); await p.setLocalDescription(ans); sk.emit('webrtc_answer', ans);
+    sk.on('load_board', b => b && setBlocks(b));
+
+    sk.on('system_message', msg => setChatMessages(prev => [...prev, { type: 'system', text: msg }]));
+    sk.on('new_chat_message', msg => setChatMessages(prev => [...prev, { type: 'user', ...msg }]));
+
+    sk.on('user_joined', async remoteSocketId => {
+      const pc = createPeer(sk, remoteSocketId);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      sk.emit('webrtc_offer', offer, remoteSocketId);
     });
-    sk.on('webrtc_answer', async a => pc.current && await pc.current.setRemoteDescription(a));
-    sk.on('webrtc_ice_candidate', async c => pc.current && await pc.current.addIceCandidate(new RTCIceCandidate(c)));
-    return () => sk.disconnect();
-  }, [role, roomId]);
+
+    sk.on('webrtc_offer', async (offer, remoteSocketId) => {
+      const pc = createPeer(sk, remoteSocketId);
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sk.emit('webrtc_answer', answer, remoteSocketId);
+    });
+
+    sk.on('webrtc_answer', async (answer, remoteSocketId) => {
+      const pc = peerConnections.current[remoteSocketId];
+      if (pc) await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    });
+
+    sk.on('webrtc_ice_candidate', async (candidate, remoteSocketId) => {
+      const pc = peerConnections.current[remoteSocketId];
+      if (pc) await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    });
+
+    sk.on('user_disconnected', remoteSocketId => {
+      peerConnections.current[remoteSocketId]?.close();
+      delete peerConnections.current[remoteSocketId];
+      setRemoteStreams(prev => { const s = { ...prev }; delete s[remoteSocketId]; return s; });
+    });
+
+    return () => {
+      Object.values(peerConnections.current).forEach(p => p.close());
+      peerConnections.current = {};
+      sk.disconnect();
+    };
+  }, [roomId, currentUser, createPeer]);
 
   const handleAuth = async e => {
     e.preventDefault();
@@ -186,45 +243,83 @@ export default function App() {
   const clearBoard = () => { setBlocks([]); socket.emit('board_change', []); };
   const updBlock = (id, v) => { const nb = blocks.map(b => b.id === id ? { ...b, content: v } : b); setBlocks(nb); socket.emit('board_change', nb); };
   const updQuiz = (id, f, v) => { const nb = blocks.map(b => b.id === id ? { ...b, content: { ...b.content, [f]: v } } : b); setBlocks(nb); socket.emit('board_change', nb); };
-  const assignHw = async e => { e.preventDefault(); const res = await fetch(`${API_URL}/api/homework/assign`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ teacher_id: currentUser.id, student_email: hwForm.email, title: hwForm.title, board_content: [{ id: Date.now(), type: 'text', content: '' }] }) }); if (res.ok) { alert('ДЗ отправлено!'); setHwForm({ email: '', title: '' }); fetch(`${API_URL}/api/homework/teacher?teacher_id=${currentUser.id}`).then(r => r.json()).then(setHw); } };
+  const assignHw = async e => {
+    e.preventDefault();
+    const res = await fetch(`${API_URL}/api/homework/assign`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ student_email: hwForm.email, title: hwForm.title, board_content: [{ id: Date.now(), type: 'text', content: '' }] }) });
+    if (res.ok) {
+      alert('ДЗ отправлено!');
+      setHwForm({ email: '', title: '' });
+      fetch(`${API_URL}/api/homework/teacher`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setHw(d) : null);
+    } else {
+      const d = await res.json();
+      alert(d.error || 'Ошибка');
+    }
+  };
   const turnOnCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setLocalStream(stream); streamRef.current = stream;
+      setLocalStream(stream);
+      streamRef.current = stream;
       if (myVideo.current) myVideo.current.srcObject = stream;
-      const p = new RTCPeerConnection(pcConfig); pc.current = p;
-      p.onicecandidate = e => e.candidate && socket.emit('webrtc_ice_candidate', e.candidate);
-      p.ontrack = e => remoteVideo.current && (remoteVideo.current.srcObject = e.streams[0]);
-      stream.getTracks().forEach(t => p.addTrack(t, stream));
-      const offer = await p.createOffer(); await p.setLocalDescription(offer); socket.emit('webrtc_offer', offer);
-    } catch (err) { console.error(err); }
+      // Добавляем треки в уже существующие соединения
+      Object.values(peerConnections.current).forEach(pc => {
+        stream.getTracks().forEach(t => pc.addTrack(t, stream));
+      });
+    } catch (err) { console.error(err); alert('Не удалось открыть камеру: ' + err.message); }
+  };
+
+  const toggleMic = () => {
+    const track = streamRef.current?.getAudioTracks()[0];
+    if (track) { track.enabled = !track.enabled; setIsMicMuted(!track.enabled); }
+  };
+
+  const toggleCamera = () => {
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (track) { track.enabled = !track.enabled; setIsCameraOff(!track.enabled); }
+  };
+
+  const sendChat = e => {
+    e.preventDefault();
+    if (!chatInput.trim() || !socket) return;
+    socket.emit('chat_message', chatInput.trim());
+    setChatInput('');
   };
 
   const addSchedule = async e => {
     e.preventDefault();
-    const res = await fetch(`${API_URL}/api/schedule`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...scheduleForm, teacher_id: currentUser.id }) });
+    const res = await fetch(`${API_URL}/api/schedule`, { method: 'POST', headers: authHeaders(), body: JSON.stringify(scheduleForm) });
     if (res.ok) {
       setShowScheduleForm(false);
       setScheduleForm({ title: '', student_email: '', lesson_date: '', start_time: '09:00', end_time: '10:00' });
-      fetch(`${API_URL}/api/schedule?teacher_id=${currentUser.id}`).then(r => r.json()).then(setScheduleData);
+      fetch(`${API_URL}/api/schedule`, { headers: authHeaders() }).then(r => r.json()).then(d => Array.isArray(d) ? setScheduleData(d) : null);
+    } else {
+      const d = await res.json();
+      alert(d.error || 'Ошибка');
     }
   };
 
   const deleteSchedule = async id => {
-    await fetch(`${API_URL}/api/schedule/${id}`, { method: 'DELETE' });
+    await fetch(`${API_URL}/api/schedule/${id}`, { method: 'DELETE', headers: authHeaders() });
     setScheduleData(prev => prev.filter(s => s.id !== id));
   };
 
   const saveProfile = async e => {
     e.preventDefault();
-    const res = await fetch(`${API_URL}/api/profile`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: currentUser.id, name: profileForm.name }) });
+    const res = await fetch(`${API_URL}/api/profile/${currentUser.id}`, { method: 'PUT', headers: authHeaders(), body: JSON.stringify(profileForm) });
     if (res.ok) {
-      const updated = { ...currentUser, name: profileForm.name };
+      const updated = { ...currentUser, ...profileForm };
       setCurrentUser(updated);
       localStorage.setItem('doublelang_user', JSON.stringify(updated));
       alert('Профиль обновлён!');
+    } else {
+      const d = await res.json();
+      alert(d.error || 'Ошибка');
     }
   };
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
   const students = users.filter(u => u.role === 'student');
   const teachers = users.filter(u => u.role === 'teacher');
@@ -268,68 +363,148 @@ export default function App() {
     </div>
   );
 
-  // ── ДОСКА ─────────────────────────────────────────────────────────────────
-  if (roomId) return (
-    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, padding: '18px' }}>
-      <div style={{ maxWidth: '1100px', margin: '0 auto', display: 'flex', gap: '16px' }}>
-        <div style={{ width: '245px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '12px' }}>
-          <div style={S.card}>
-            <div style={{ fontWeight: '600', color: C.text, marginBottom: '10px', fontSize: '13px' }}>Видеосвязь</div>
-            {[{ ref: myVideo, muted: true, show: !!localStream, label: 'Моя камера' }, { ref: remoteVideo, muted: false, show: true, label: 'Собеседник' }].map((v, i) => (
-              <div key={i} style={{ height: '138px', background: '#111827', borderRadius: '8px', overflow: 'hidden', marginBottom: '8px', position: 'relative' }}>
-                <video ref={v.ref} autoPlay muted={v.muted} playsInline style={{ width: '100%', height: '100%', objectFit: 'cover', display: v.show ? 'block' : 'none' }}></video>
-                <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '11px', textAlign: 'center', paddingTop: '56px', position: 'absolute', top: 0, width: '100%' }}>{v.label}</div>
+  // ── ДОСКА / КОМНАТА ───────────────────────────────────────────────────────
+  if (roomId) {
+    const isTeacher = currentUser?.role === 'teacher';
+    const roomTitle = roomId.startsWith('hw_') ? '📝 Домашнее задание' : roomId.startsWith('sched_') ? '📅 Запланированный урок' : '📋 Онлайн-урок';
+
+    return (
+      <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT }}>
+        {/* Шапка */}
+        <div style={{ background: '#fff', borderBottom: `1px solid ${C.border}`, padding: '10px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'sticky', top: 0, zIndex: 50 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button onClick={() => { setRoomId(''); setChatMessages([]); window.history.pushState(null, null, '/'); }}
+              style={{ ...S.btn('#6b7280'), padding: '7px 14px', fontSize: '12px' }}>← Выйти</button>
+            <div><div style={{ fontWeight: '700', color: C.text, fontSize: '15px' }}>{roomTitle}</div><div style={{ color: C.sub, fontSize: '11px' }}>ID: {roomId}</div></div>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            {localStream ? (
+              <>
+                <button onClick={toggleMic} style={{ ...S.btn(isMicMuted ? C.danger : '#6b7280'), padding: '7px 12px', fontSize: '12px' }}>
+                  {isMicMuted ? '🔇 Включить' : '🎤 Выкл.'}
+                </button>
+                <button onClick={toggleCamera} style={{ ...S.btn(isCameraOff ? C.danger : '#6b7280'), padding: '7px 12px', fontSize: '12px' }}>
+                  {isCameraOff ? '📵 Включить' : '📷 Выкл.'}
+                </button>
+              </>
+            ) : (
+              <button onClick={turnOnCamera} style={{ ...S.btn(), padding: '7px 14px', fontSize: '12px' }}>🎥 Камера</button>
+            )}
+            {isTeacher && (
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {[['📄 Текст', '#10b981', 'text'], ['🎬 Видео', C.blue, 'video'], ['❓ Тест', '#f59e0b', 'quiz'], ['✏️ Доска', C.teal, 'canvas']].map(([l, c, t]) => (
+                  <button key={t} onClick={() => addBlock(t)} style={{ ...S.btn(c), padding: '6px 10px', fontSize: '11px' }}>{l}</button>
+                ))}
+                <button onClick={clearBoard} style={{ ...S.btn(C.danger), padding: '6px 10px', fontSize: '11px' }}>✕</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Основной контент */}
+        <div style={{ display: 'flex', height: 'calc(100vh - 53px)' }}>
+          {/* Левая панель: видео */}
+          <div style={{ width: '220px', flexShrink: 0, background: '#111827', display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px', overflowY: 'auto' }}>
+            <div style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', background: '#1f2937' }}>
+              <video ref={myVideo} autoPlay muted playsInline style={{ width: '100%', display: localStream ? 'block' : 'none', aspectRatio: '4/3', objectFit: 'cover' }} />
+              {!localStream && <div style={{ height: '120px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,0.3)', fontSize: '11px' }}>Нет камеры</div>}
+              <div style={{ position: 'absolute', bottom: '4px', left: '6px', color: '#fff', fontSize: '10px', background: 'rgba(0,0,0,0.5)', padding: '2px 5px', borderRadius: '4px' }}>{currentUser?.name ?? 'Вы'} {isMicMuted ? '🔇' : ''}</div>
+            </div>
+            {Object.entries(remoteStreams).map(([sid, stream]) => (
+              <div key={sid} style={{ position: 'relative', borderRadius: '8px', overflow: 'hidden', background: '#1f2937' }}>
+                <video autoPlay playsInline style={{ width: '100%', aspectRatio: '4/3', objectFit: 'cover' }} ref={v => { if (v) v.srcObject = stream; }} />
+                <div style={{ position: 'absolute', bottom: '4px', left: '6px', color: '#fff', fontSize: '10px', background: 'rgba(0,0,0,0.5)', padding: '2px 5px', borderRadius: '4px' }}>Участник</div>
               </div>
             ))}
-            {!localStream && <button onClick={turnOnCamera} style={{ ...S.btn(), width: '100%', padding: '8px', fontSize: '12px' }}>🎥 Включить камеру</button>}
           </div>
-          <button onClick={() => { setRoomId(''); window.history.pushState(null, null, '/'); }} style={{ ...S.btn('#6b7280'), width: '100%' }}>← Выйти в кабинет</button>
-        </div>
-        <div style={{ flexGrow: 1 }}>
-          <div style={S.card}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', paddingBottom: '12px', borderBottom: `1px solid ${C.border}` }}>
-              <div><h2 style={{ margin: 0, color: C.text, fontSize: '16px' }}>{roomId.startsWith('hw_') ? '📝 Домашнее задание' : roomId.startsWith('sched_') ? '📅 Запланированный урок' : '📋 Онлайн-урок'}</h2><span style={{ color: C.sub, fontSize: '11px' }}>ID: {roomId}</span></div>
-              {role === 'teacher' && (
-                <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
-                  {[['Текст', '#10b981', 'text'], ['Видео', C.blue, 'video'], ['Тест', '#f59e0b', 'quiz'], ['Рисование', C.teal, 'canvas']].map(([l, c, t]) => (
-                    <button key={t} onClick={() => addBlock(t)} style={{ ...S.btn(c), padding: '6px 10px', fontSize: '11px' }}>+ {l}</button>
-                  ))}
-                  <button onClick={clearBoard} style={{ ...S.btn(C.danger), padding: '6px 10px', fontSize: '11px' }}>✕</button>
-                </div>
-              )}
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {!blocks.length && <p style={{ color: C.sub, textAlign: 'center', padding: '40px 0', fontStyle: 'italic', fontSize: '13px' }}>Доска пуста...</p>}
-              {blocks.map(b => (
-                <div key={b.id} style={{ padding: '12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: '8px' }}>
-                  {b.type === 'text' && <textarea value={b.content} onChange={e => updBlock(b.id, e.target.value)} style={{ ...S.inp, minHeight: '90px', resize: 'vertical' }} placeholder="Текст..." />}
-                  {b.type === 'video' && <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    <input type="text" value={b.content} onChange={e => updBlock(b.id, e.target.value)} placeholder="Ссылка YouTube..." style={S.inp} />
-                    {b.content && <iframe width="100%" height="300" src={b.content.includes('watch?v=') ? b.content.replace('watch?v=', 'embed/') : b.content} frameBorder="0" allowFullScreen style={{ borderRadius: '8px' }}></iframe>}
-                  </div>}
-                  {b.type === 'canvas' && <DrawingBoard block={b} updateContent={updBlock} />}
-                  {b.type === 'quiz' && <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
-                    {role === 'teacher' ? <>
-                      <input type="text" placeholder="Вопрос..." value={b.content.question} onChange={e => updQuiz(b.id, 'question', e.target.value)} style={{ ...S.inp, fontWeight: '600' }} />
-                      {b.content.options.map((opt, i) => (
-                        <div key={i} style={{ display: 'flex', gap: '9px', alignItems: 'center' }}>
-                          <input type="radio" name={`q-${b.id}`} checked={b.content.correctAnswer === i} onChange={() => updQuiz(b.id, 'correctAnswer', i)} />
-                          <input type="text" placeholder={`Вариант ${i + 1}`} value={opt} onChange={e => { const a = [...b.content.options]; a[i] = e.target.value; updQuiz(b.id, 'options', a); }} style={S.inp} />
-                        </div>
-                      ))}
-                    </> : <>
-                      <h3 style={{ margin: '0 0 8px 0', color: C.text, fontSize: '14px' }}>{b.content.question || 'Вопрос...'}</h3>
-                      {b.content.options.map((opt, i) => { if (!opt) return null; const sel = b.content.studentAnswer === i, cor = sel && i === b.content.correctAnswer; return <button key={i} onClick={() => updQuiz(b.id, 'studentAnswer', i)} disabled={b.content.studentAnswer !== null} style={{ width: '100%', padding: '10px', textAlign: 'left', borderRadius: '8px', border: `1px solid ${sel ? (cor ? '#10b981' : C.danger) : C.border}`, cursor: 'pointer', background: sel ? (cor ? '#d1fae5' : '#fee2e2') : '#fff', color: sel ? (cor ? '#065f46' : '#991b1b') : C.text, fontFamily: FONT, fontSize: '13px', marginBottom: '4px' }}>{opt}</button>; })}
-                    </>}
-                  </div>}
+
+          {/* Центр: блоки */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+            {!blocks.length && (
+              <div style={{ textAlign: 'center', color: C.sub, paddingTop: '80px' }}>
+                <div style={{ fontSize: '48px', marginBottom: '12px' }}>📋</div>
+                <p style={{ fontSize: '14px' }}>Доска пуста{isTeacher ? ' — добавьте блок сверху' : ''}</p>
+              </div>
+            )}
+            {blocks.map(b => (
+              <div key={b.id} style={{ marginBottom: '12px', padding: '14px', background: '#fff', border: `1px solid ${C.border}`, borderRadius: '10px' }}>
+                {b.type === 'text' && (
+                  <textarea value={b.content} onChange={e => updBlock(b.id, e.target.value)} readOnly={!isTeacher}
+                    style={{ ...S.inp, minHeight: '100px', resize: 'vertical' }} placeholder="Текст урока..." />
+                )}
+                {b.type === 'video' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {isTeacher && <input type="text" value={b.content} onChange={e => updBlock(b.id, e.target.value)} placeholder="Ссылка YouTube..." style={S.inp} />}
+                    {b.content && <iframe width="100%" height="340" src={b.content.includes('watch?v=') ? b.content.replace('watch?v=', 'embed/') : b.content} frameBorder="0" allowFullScreen style={{ borderRadius: '8px' }} />}
+                  </div>
+                )}
+                {b.type === 'canvas' && (
+                  <InteractiveBoard
+                    socket={socket}
+                    readOnly={!isTeacher}
+                    initialDataUrl={typeof b.content === 'string' && b.content.startsWith('data:') ? b.content : null}
+                    onSave={dataUrl => updBlock(b.id, dataUrl)}
+                  />
+                )}
+                {b.type === 'quiz' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+                    {isTeacher ? (
+                      <>
+                        <input type="text" placeholder="Вопрос..." value={b.content.question}
+                          onChange={e => updQuiz(b.id, 'question', e.target.value)} style={{ ...S.inp, fontWeight: '600' }} />
+                        {b.content.options.map((opt, i) => (
+                          <div key={i} style={{ display: 'flex', gap: '9px', alignItems: 'center' }}>
+                            <input type="radio" name={`q-${b.id}`} checked={b.content.correctAnswer === i} onChange={() => updQuiz(b.id, 'correctAnswer', i)} />
+                            <input type="text" placeholder={`Вариант ${i + 1}`} value={opt}
+                              onChange={e => { const a = [...b.content.options]; a[i] = e.target.value; updQuiz(b.id, 'options', a); }} style={S.inp} />
+                          </div>
+                        ))}
+                      </>
+                    ) : (
+                      <>
+                        <h3 style={{ margin: '0 0 10px 0', color: C.text, fontSize: '15px' }}>{b.content.question || 'Вопрос...'}</h3>
+                        {b.content.options.map((opt, i) => {
+                          if (!opt) return null;
+                          const sel = b.content.studentAnswer === i;
+                          const cor = sel && i === b.content.correctAnswer;
+                          return <button key={i} onClick={() => updQuiz(b.id, 'studentAnswer', i)} disabled={b.content.studentAnswer !== null}
+                            style={{ width: '100%', padding: '10px', textAlign: 'left', borderRadius: '8px', cursor: 'pointer', fontFamily: FONT, fontSize: '13px', marginBottom: '5px', border: `1px solid ${sel ? (cor ? '#10b981' : C.danger) : C.border}`, background: sel ? (cor ? '#d1fae5' : '#fee2e2') : '#fff', color: sel ? (cor ? '#065f46' : '#991b1b') : C.text }}>{opt}</button>;
+                        })}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Правая панель: чат */}
+          <div style={{ width: '260px', flexShrink: 0, background: '#fff', borderLeft: `1px solid ${C.border}`, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '12px 14px', fontWeight: '600', color: C.text, fontSize: '13px', borderBottom: `1px solid ${C.border}` }}>💬 Чат</div>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {chatMessages.map((msg, i) => (
+                <div key={i}>
+                  {msg.type === 'system' ? (
+                    <div style={{ fontSize: '11px', color: C.sub, fontStyle: 'italic', textAlign: 'center', padding: '2px 0' }}>{msg.text}</div>
+                  ) : (
+                    <div style={{ background: msg.sender === currentUser?.name ? '#e8f3fd' : C.bg, borderRadius: '8px', padding: '7px 10px' }}>
+                      <div style={{ fontSize: '10px', color: C.blue, fontWeight: '600', marginBottom: '2px' }}>{msg.sender === currentUser?.name ? 'Вы' : msg.sender}</div>
+                      <div style={{ fontSize: '13px', color: C.text }}>{msg.text}</div>
+                    </div>
+                  )}
                 </div>
               ))}
+              <div ref={chatEndRef} />
             </div>
+            <form onSubmit={sendChat} style={{ padding: '10px', borderTop: `1px solid ${C.border}`, display: 'flex', gap: '6px' }}>
+              <input value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder="Сообщение..." style={{ ...S.inp, fontSize: '13px', padding: '8px 10px' }} />
+              <button type="submit" style={{ ...S.btn(), padding: '8px 12px', fontSize: '13px', flexShrink: 0 }}>→</button>
+            </form>
           </div>
         </div>
       </div>
-    </div>
-  );
+    );
+  }
 
   // ── ДАШБОРД ───────────────────────────────────────────────────────────────
   const menu = MENUS[currentUser.role] || MENUS.student;
@@ -664,15 +839,71 @@ export default function App() {
       if (sec === 'settings') {
         if (settingsView === 'profile') return (
           <div>
-            <button onClick={() => setSettingsView(null)} style={{ ...S.btnOut, marginBottom: '16px' }}>← Настройки</button>
-            <div style={S.card}>
-              <h3 style={{ margin: '0 0 20px 0', color: C.text, fontSize: '16px' }}>Личный профиль</h3>
-              <form onSubmit={saveProfile} style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxWidth: '400px' }}>
-                <div><label style={{ fontSize: '12px', color: C.sub, display: 'block', marginBottom: '5px' }}>Имя</label><input type="text" required value={profileForm.name} onChange={e => setProfileForm({ ...profileForm, name: e.target.value })} style={S.inp} /></div>
-                <div><label style={{ fontSize: '12px', color: C.sub, display: 'block', marginBottom: '5px' }}>Email</label><input type="email" value={currentUser.email} disabled style={{ ...S.inp, background: C.bg, color: C.sub }} /></div>
-                <div><label style={{ fontSize: '12px', color: C.sub, display: 'block', marginBottom: '5px' }}>Роль</label><input value="Преподаватель" disabled style={{ ...S.inp, background: C.bg, color: C.sub }} /></div>
-                <button type="submit" style={S.btn()}>Сохранить изменения</button>
-              </form>
+            <button onClick={() => setSettingsView(null)} style={{ ...S.btnOut, marginBottom: '18px' }}>← Настройки</button>
+            <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: '20px', alignItems: 'start' }}>
+              {/* Карточка аватара */}
+              <div style={{ ...S.card, textAlign: 'center' }}>
+                <div style={{ width: '96px', height: '96px', borderRadius: '50%', background: `linear-gradient(135deg, ${C.blue}, #252641)`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '36px', fontWeight: '800', margin: '0 auto 14px' }}>
+                  {profileForm.name ? profileForm.name[0].toUpperCase() : currentUser.name[0].toUpperCase()}
+                </div>
+                <div style={{ fontWeight: '700', color: C.text, fontSize: '16px', marginBottom: '4px' }}>{profileForm.name || currentUser.name}</div>
+                <div style={{ color: C.sub, fontSize: '12px', marginBottom: '12px' }}>{currentUser.email}</div>
+                <Badge label={currentUser.role === 'teacher' ? '👨‍🏫 Преподаватель' : currentUser.role === 'admin' ? '🛠️ Администратор' : '🧑‍🎓 Ученик'} color={C.blue} bg='#dbeafe' />
+                {profileForm.about && (
+                  <p style={{ color: C.sub, fontSize: '12px', marginTop: '14px', lineHeight: 1.6, textAlign: 'left' }}>{profileForm.about}</p>
+                )}
+                {profileForm.language && (
+                  <div style={{ marginTop: '10px', fontSize: '12px', color: C.sub, textAlign: 'left' }}>🌍 Преподаёт: <strong style={{ color: C.text }}>{profileForm.language}</strong></div>
+                )}
+                {profileForm.phone && (
+                  <div style={{ marginTop: '6px', fontSize: '12px', color: C.sub, textAlign: 'left' }}>📱 <strong style={{ color: C.text }}>{profileForm.phone}</strong></div>
+                )}
+                <div style={{ marginTop: '6px', fontSize: '12px', color: C.sub, textAlign: 'left' }}>🕐 Часовой пояс: <strong style={{ color: C.text }}>{profileForm.timezone}</strong></div>
+              </div>
+
+              {/* Форма редактирования */}
+              <div style={S.card}>
+                <h3 style={{ margin: '0 0 20px 0', color: C.text, fontSize: '17px', fontWeight: '700' }}>Редактировать профиль</h3>
+                <form onSubmit={saveProfile} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                    <div>
+                      <label style={{ fontSize: '11px', color: C.sub, display: 'block', marginBottom: '5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Имя *</label>
+                      <input type="text" required value={profileForm.name} onChange={e => setProfileForm({ ...profileForm, name: e.target.value })} style={S.inp} placeholder="Ваше имя" />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '11px', color: C.sub, display: 'block', marginBottom: '5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Телефон</label>
+                      <input type="tel" value={profileForm.phone} onChange={e => setProfileForm({ ...profileForm, phone: e.target.value })} style={S.inp} placeholder="+7 (999) 000-00-00" />
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', color: C.sub, display: 'block', marginBottom: '5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Email</label>
+                    <input type="email" value={currentUser.email} disabled style={{ ...S.inp, background: C.bg, color: C.sub }} />
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+                    <div>
+                      <label style={{ fontSize: '11px', color: C.sub, display: 'block', marginBottom: '5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Язык преподавания</label>
+                      <select value={profileForm.language} onChange={e => setProfileForm({ ...profileForm, language: e.target.value })} style={S.inp}>
+                        <option value="">Не указан</option>
+                        {['Английский', 'Немецкий', 'Французский', 'Испанский', 'Итальянский', 'Китайский', 'Японский', 'Корейский', 'Португальский', 'Арабский', 'Турецкий', 'Голландский'].map(l => <option key={l} value={l}>{l}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: '11px', color: C.sub, display: 'block', marginBottom: '5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Часовой пояс</label>
+                      <select value={profileForm.timezone} onChange={e => setProfileForm({ ...profileForm, timezone: e.target.value })} style={S.inp}>
+                        {['UTC-5', 'UTC-3', 'UTC+0', 'UTC+1', 'UTC+2', 'UTC+3', 'UTC+4', 'UTC+5', 'UTC+6', 'UTC+7', 'UTC+8'].map(tz => <option key={tz} value={tz}>{tz}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', color: C.sub, display: 'block', marginBottom: '5px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.5px' }}>О себе</label>
+                    <textarea value={profileForm.about} onChange={e => setProfileForm({ ...profileForm, about: e.target.value })} style={{ ...S.inp, minHeight: '100px', resize: 'vertical' }} placeholder="Расскажите об опыте, методике преподавания..." />
+                  </div>
+                  <div style={{ display: 'flex', gap: '10px', paddingTop: '4px' }}>
+                    <button type="submit" style={{ ...S.btn(), flex: 1 }}>Сохранить изменения</button>
+                    <button type="button" onClick={() => setProfileForm({ name: currentUser.name, phone: '', about: '', language: '', timezone: 'UTC+3' })} style={{ ...S.btnOut, padding: '9px 16px' }}>Сбросить</button>
+                  </div>
+                </form>
+              </div>
             </div>
           </div>
         );
